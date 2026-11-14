@@ -50,6 +50,18 @@ class EpisodeSelectionPanelState extends State<EpisodeSelectionPanel> {
   late int _visibleRoad = widget.selectedRoad;
   late bool _isReversed = widget.isReversedForRoad(_visibleRoad);
 
+  @override
+  void didUpdateWidget(covariant EpisodeSelectionPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.selectedRoad != widget.selectedRoad &&
+        _visibleRoad == oldWidget.selectedRoad) {
+      _visibleRoad = widget.selectedRoad;
+    }
+    if (oldWidget.selectedRoad != widget.selectedRoad) {
+      _isReversed = widget.isReversedForRoad(_visibleRoad);
+    }
+  }
+
   bool get _canLocate =>
       widget.selectedRoad >= 0 &&
       widget.selectedRoad < widget.roads.length &&
@@ -69,8 +81,18 @@ class EpisodeSelectionPanelState extends State<EpisodeSelectionPanel> {
   }
 
   Future<void> _toggleOrder() async {
-    await widget.onToggleOrder(_visibleRoad);
-    if (mounted) setState(() => _isReversed = !_isReversed);
+    final road = _visibleRoad;
+    setState(() => _isReversed = !_isReversed);
+    try {
+      await widget.onToggleOrder(road);
+    } catch (error) {
+      if (mounted) {
+        setState(() => _isReversed = !_isReversed);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('保存集序设置失败：$error')),
+        );
+      }
+    }
   }
 
   Future<void> revealCurrentEpisode() async {

@@ -254,7 +254,7 @@ abstract class _VideoPageController with Store implements Disposable {
   Future<void> toggleEpisodeOrder(int roadIndex) async {
     final keys = GStorage.getStringListSettingByName(
       _reversedEpisodeOrderStorageKey,
-    );
+    ).toList(growable: true);
     final key = _episodeOrderKey(roadIndex);
     if (!keys.remove(key)) keys.add(key);
     await GStorage.putStringListSettingByName(
