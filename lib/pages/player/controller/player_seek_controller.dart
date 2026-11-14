@@ -51,6 +51,7 @@ class PlayerSeekController {
       return Future<void>.value();
     }
 
+    _playback.resetRenderWatchdog();
     final normalizedTarget = _normalize(target);
     _playback.currentPosition = normalizedTarget;
     _danmaku.clearAndInvalidateScheduledDanmakus();

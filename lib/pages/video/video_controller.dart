@@ -124,6 +124,7 @@ abstract class _VideoPageController with Store implements Disposable {
   bool isOfflineMode = false;
 
   PlaybackHistoryIdentity? _playbackHistoryIdentity;
+  static const _reversedEpisodeOrderStorageKey = 'reversedEpisodeOrders';
   final Map<int, DownloadEpisode> _offlineEpisodesByNumber = {};
   final Map<int, int> _offlineDisplayRoadToOriginalRoad = {};
   final Map<int, int> _offlineOriginalRoadToDisplayRoad = {};
@@ -231,6 +232,41 @@ abstract class _VideoPageController with Store implements Disposable {
   }
 
   String get offlinePluginName => _offlinePluginName;
+
+  String _episodeOrderKey(int roadIndex) {
+    final roadName = roadIndex >= 0 && roadIndex < roadList.length
+        ? roadList[roadIndex].name
+        : '';
+    return [
+      bangumiItem.id.toString(),
+      isOfflineMode ? _offlinePluginName : currentPlugin.name,
+      isOfflineMode ? 'offline' : src,
+      roadName,
+    ].join('\u001f');
+  }
+
+  bool isEpisodeOrderReversed(int roadIndex) {
+    return GStorage.getStringListSettingByName(
+      _reversedEpisodeOrderStorageKey,
+    ).contains(_episodeOrderKey(roadIndex));
+  }
+
+  Future<void> toggleEpisodeOrder(int roadIndex) async {
+    final keys = GStorage.getStringListSettingByName(
+      _reversedEpisodeOrderStorageKey,
+    );
+    final key = _episodeOrderKey(roadIndex);
+    if (!keys.remove(key)) keys.add(key);
+    await GStorage.putStringListSettingByName(
+      _reversedEpisodeOrderStorageKey,
+      keys,
+    );
+  }
+
+  int episodeInDirection(int episode, int roadIndex, {required bool next}) {
+    final delta = isEpisodeOrderReversed(roadIndex) ? -1 : 1;
+    return episode + (next ? delta : -delta);
+  }
 
   PlaybackHistoryIdentity? get currentHistoryIdentity =>
       _playbackHistoryIdentity;

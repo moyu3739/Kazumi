@@ -512,6 +512,8 @@ class _VideoPageState extends State<VideoPage>
           roads: videoPageController.roadList,
           selectedRoad: videoPageController.selectedEpisode.road,
           selectedEpisode: videoPageController.selectedEpisode.episode,
+          isReversedForRoad: videoPageController.isEpisodeOrderReversed,
+          onToggleOrder: videoPageController.toggleEpisodeOrder,
           downloads: downloads,
           isOffline: videoPageController.isOfflineMode,
           isPlaying: playerController.playback.playing &&

@@ -208,6 +208,16 @@ class SettingsKeys {
     true,
     group: SettingGroup.danmaku,
   );
+  static const danmakuFrameRate = SettingKey<int>(
+    'danmakuFrameRate',
+    60,
+    group: SettingGroup.danmaku,
+  );
+  static const danmakuLimitEnabled = SettingKey<bool>(
+    'danmakuLimitEnabled',
+    true,
+    group: SettingGroup.danmaku,
+  );
   static const themeMode = SettingKey<String>(
     _SettingBoxKey.themeMode,
     'system',
@@ -592,6 +602,8 @@ class SettingsKeys {
     danmakuDanDanSource,
     danmakuFontWeight,
     danmakuFollowSpeed,
+    danmakuFrameRate,
+    danmakuLimitEnabled,
     themeMode,
     themeColor,
     privateMode,
@@ -666,7 +678,7 @@ class SettingsKeys {
   static List<SettingKey<Object?>> byGroup(SettingGroup group) {
     return [
       for (final key in all)
-        if (key.group == group) key
+        if (key.group == group) key,
     ];
   }
 

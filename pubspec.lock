@@ -206,10 +206,9 @@ packages:
   canvas_danmaku:
     dependency: "direct main"
     description:
-      name: canvas_danmaku
-      sha256: "1ff071d027b1cf3320d4b58ff1aee6811de51ce39b5b5773c2e0d7693e02d401"
-      url: "https://pub.dev"
-    source: hosted
+      path: "packages/canvas_danmaku"
+      relative: true
+    source: path
     version: "0.3.3"
   characters:
     dependency: transitive
@@ -988,11 +987,9 @@ packages:
   media_kit_video:
     dependency: "direct main"
     description:
-      path: media_kit_video
-      ref: "803c4a27912091db6f839d48d1b984a0d9f588c7"
-      resolved-ref: "803c4a27912091db6f839d48d1b984a0d9f588c7"
-      url: "https://github.com/Predidit/media-kit.git"
-    source: git
+      path: "packages/media_kit_video"
+      relative: true
+    source: path
     version: "1.2.5"
   menu_base:
     dependency: transitive

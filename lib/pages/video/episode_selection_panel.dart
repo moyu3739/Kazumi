@@ -17,6 +17,8 @@ class EpisodeSelectionPanel extends StatefulWidget {
     required this.selectedEpisode,
     required this.onEpisodeSelected,
     required this.downloads,
+    required this.isReversedForRoad,
+    required this.onToggleOrder,
     this.onDownload,
     this.isOffline = false,
     this.isPlaying = false,
@@ -30,6 +32,8 @@ class EpisodeSelectionPanel extends StatefulWidget {
   final void Function(int episode, int road) onEpisodeSelected;
   final ValueChanged<int>? onDownload;
   final Map<String, DownloadEpisode> downloads;
+  final bool Function(int road) isReversedForRoad;
+  final Future<void> Function(int road) onToggleOrder;
   final bool isOffline;
   final bool isPlaying;
   final bool disableAnimations;
@@ -44,6 +48,7 @@ class EpisodeSelectionPanelState extends State<EpisodeSelectionPanel> {
       ListObserverController(controller: _scrollController)
         ..cacheJumpIndexOffset = false;
   late int _visibleRoad = widget.selectedRoad;
+  late bool _isReversed = widget.isReversedForRoad(_visibleRoad);
 
   bool get _canLocate =>
       widget.selectedRoad >= 0 &&
@@ -56,8 +61,16 @@ class EpisodeSelectionPanelState extends State<EpisodeSelectionPanel> {
 
   void _selectRoad(int road) {
     if (_visibleRoad == road) return;
-    setState(() => _visibleRoad = road);
+    setState(() {
+      _visibleRoad = road;
+      _isReversed = widget.isReversedForRoad(road);
+    });
     if (_scrollController.hasClients) _scrollController.jumpTo(0);
+  }
+
+  Future<void> _toggleOrder() async {
+    await widget.onToggleOrder(_visibleRoad);
+    if (mounted) setState(() => _isReversed = !_isReversed);
   }
 
   Future<void> revealCurrentEpisode() async {
@@ -72,7 +85,9 @@ class EpisodeSelectionPanelState extends State<EpisodeSelectionPanel> {
       return;
     }
 
-    final index = widget.selectedEpisode - 1;
+    final index = widget.isReversedForRoad(widget.selectedRoad)
+        ? widget.roads[widget.selectedRoad].data.length - widget.selectedEpisode
+        : widget.selectedEpisode - 1;
     final toolbarHeight = _toolbarHeight;
     final item = _observerController.observeItem(index: index);
     if (item != null) {
@@ -104,6 +119,7 @@ class EpisodeSelectionPanelState extends State<EpisodeSelectionPanel> {
         ? widget.roads[_visibleRoad]
         : null;
     final count = road?.data.length ?? 0;
+    final isReversed = _isReversed;
 
     return LayoutBuilder(builder: (context, constraints) {
       final textScaler = MediaQuery.textScalerOf(context);
@@ -173,6 +189,11 @@ class EpisodeSelectionPanelState extends State<EpisodeSelectionPanel> {
                           onPressed: _canLocate ? revealCurrentEpisode : null,
                           icon: const Icon(Icons.my_location_rounded, size: 20),
                         ),
+                        IconButton(
+                          tooltip: isReversed ? '恢复正序' : '反转集序',
+                          onPressed: count > 1 ? _toggleOrder : null,
+                          icon: const Icon(Icons.swap_vert_rounded, size: 20),
+                        ),
                         if (!widget.isOffline)
                           IconButton.filledTonal(
                             tooltip: '缓存剧集',
@@ -205,10 +226,11 @@ class EpisodeSelectionPanelState extends State<EpisodeSelectionPanel> {
                   sliver: SliverList.builder(
                     itemCount: count,
                     itemBuilder: (context, index) {
-                      final episode = index + 1;
-                      final name = index < road!.identifier.length &&
-                              road.identifier[index].trim().isNotEmpty
-                          ? road.identifier[index]
+                      final episode = isReversed ? count - index : index + 1;
+                      final sourceIndex = episode - 1;
+                      final name = sourceIndex < road!.identifier.length &&
+                              road.identifier[sourceIndex].trim().isNotEmpty
+                          ? road.identifier[sourceIndex]
                           : '第$episode集';
                       return _EpisodeRow(
                         key: ValueKey('$_visibleRoad:$episode'),
@@ -219,10 +241,9 @@ class EpisodeSelectionPanelState extends State<EpisodeSelectionPanel> {
                             episode == widget.selectedEpisode,
                         isPlaying: widget.isPlaying,
                         isOffline: widget.isOffline,
-                        download: widget.downloads[road.data[index]],
+                        download: widget.downloads[road.data[sourceIndex]],
                         disableAnimations: widget.disableAnimations,
-                        onTap: () =>
-                            widget.onEpisodeSelected(episode, _visibleRoad),
+                        onTap: () => widget.onEpisodeSelected(episode, _visibleRoad),
                       );
                     },
                   ),

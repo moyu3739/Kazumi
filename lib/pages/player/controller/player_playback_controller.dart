@@ -1,7 +1,9 @@
 // ignore_for_file: library_private_types_in_public_api
 
 import 'dart:io';
-import 'dart:typed_data';
+import 'dart:async';
+import 'package:flutter/services.dart';
+import 'package:kazumi/services/player/super_resolution_recovery.dart';
 
 import 'package:flutter_volume_controller/flutter_volume_controller.dart';
 import 'package:kazumi/bean/dialog/dialog_helper.dart';
@@ -33,6 +35,8 @@ final class _OwnedPlayer {
   _OwnedPlayer(this.player);
 
   final Player player;
+  final shaderWrites = AsyncSerialQueue();
+  SuperResolutionMode appliedShaderMode = SuperResolutionMode.off;
   Future<void>? _disposeFuture;
 
   Future<void> dispose() {
@@ -75,6 +79,91 @@ abstract class _PlayerPlaybackController with Store {
   _OwnedPlayer? _ownedPlayer;
   Player? get mediaPlayer => _ownedPlayer?.player;
   VideoController? videoController;
+  Timer? _renderWatchdog;
+  SuperResolutionRecovery? _superResolutionRecovery;
+  static const _videoChannel = MethodChannel(
+    'com.alexmercerind/media_kit_video',
+  );
+
+  void resetRenderWatchdog() => _superResolutionRecovery?.resetObservation();
+
+  void _stopRenderWatchdog() {
+    _renderWatchdog?.cancel();
+    _renderWatchdog = null;
+    _superResolutionRecovery?.dispose();
+    _superResolutionRecovery = null;
+  }
+
+  Future<void> _startRenderWatchdog(Player player) async {
+    if (!Platform.isWindows || !isCurrentPlayer(player)) return;
+    if (superResolutionMode == SuperResolutionMode.off) {
+      _stopRenderWatchdog();
+      return;
+    }
+    final handle = await (player.platform as NativePlayer).handle;
+    if (!isCurrentPlayer(player)) return;
+    _stopRenderWatchdog();
+    final recovery = SuperResolutionRecovery(
+      initialMode: superResolutionMode,
+      initialEffective: _ownedPlayer?.appliedShaderMode,
+      apply: (mode) => _applyShader(mode, player),
+      onEvent: (event) => KazumiLogger().w('SR recovery: $event'),
+    );
+    _superResolutionRecovery = recovery;
+    try {
+      await recovery.ensureApplied();
+    } catch (error) {
+      KazumiLogger().w('SR recovery: initial shader sync failed', error: error);
+    }
+    var sampling = false;
+    var lastErrorAt = DateTime.fromMillisecondsSinceEpoch(0);
+    _renderWatchdog = Timer.periodic(const Duration(milliseconds: 250), (
+      _,
+    ) async {
+        if (sampling || !isCurrentPlayer(player)) {
+          return;
+        }
+        sampling = true;
+      try {
+        final state = player.state;
+        final stats = await _videoChannel
+            .invokeMapMethod<String, dynamic>(
+              'VideoOutputManager.GetRenderStats',
+              {'handle': handle.toString()},
+            )
+            .timeout(const Duration(seconds: 1));
+        if (!isCurrentPlayer(player) ||
+            !identical(_superResolutionRecovery, recovery)) {
+          return;
+        }
+        if (stats == null || stats['presentedFrames'] == null) return;
+        if (stats['hardware'] != true) return;
+        await recovery.sample(
+          eligible: state.playing && !state.buffering && !state.completed,
+          presentedFrames: stats['presentedFrames'] as int,
+          presentedAgeMs: stats['presentedAgeMs'] as int,
+          position: state.position,
+        );
+      } on MissingPluginException {
+        // Older native plugin: prevention remains usable, but no trustworthy
+        // output signal is available for automatic recovery.
+        if (isCurrentPlayer(player) &&
+            identical(_superResolutionRecovery, recovery)) {
+          _stopRenderWatchdog();
+        }
+      } catch (error) {
+        if (DateTime.now().difference(lastErrorAt).inSeconds >= 10) {
+          lastErrorAt = DateTime.now();
+          KazumiLogger().w(
+            'SR recovery: render sample/write failed',
+            error: error,
+          );
+        }
+      } finally {
+        sampling = false;
+      }
+    });
+  }
 
   final AsyncSerialQueue _prefetchWrites = AsyncSerialQueue();
   bool _prefetchSuspendWanted = false;
@@ -171,8 +260,10 @@ abstract class _PlayerPlaybackController with Store {
       await player.play();
       startOffset = 0;
     } catch (e) {
-      KazumiLogger()
-          .w('PlayerController: failed to restart from beginning', error: e);
+      KazumiLogger().w(
+        'PlayerController: failed to restart from beginning',
+        error: e,
+      );
     }
   }
 
@@ -278,8 +369,9 @@ abstract class _PlayerPlaybackController with Store {
       GStorage.getSetting(SettingsKeys.defaultSuperResolutionMode),
     );
     hAenable = GStorage.getSetting(SettingsKeys.hAenable);
-    androidEnableOpenSLES =
-        GStorage.getSetting(SettingsKeys.androidEnableOpenSLES);
+    androidEnableOpenSLES = GStorage.getSetting(
+      SettingsKeys.androidEnableOpenSLES,
+    );
     hardwareDecoder = GStorage.getSetting(SettingsKeys.hardwareDecoder);
     autoPlay = GStorage.getSetting(SettingsKeys.autoPlay);
     playerDebugMode = GStorage.getSetting(SettingsKeys.playerDebugMode);
@@ -369,17 +461,16 @@ abstract class _PlayerPlaybackController with Store {
         }
       }
 
-      await player.setAudioTrack(
-        AudioTrack.auto(),
-      );
+      await player.setAudioTrack(AudioTrack.auto());
       if (!isCurrentPlayer(player)) {
         return await _discardIfNotCurrent(candidate);
       }
 
       String? videoRenderer;
       if (Platform.isAndroid) {
-        final String androidVideoRenderer =
-            GStorage.getSetting(SettingsKeys.androidVideoRenderer);
+        final String androidVideoRenderer = GStorage.getSetting(
+          SettingsKeys.androidVideoRenderer,
+        );
 
         if (androidVideoRenderer == 'auto') {
           // Android 14 及以上使用基于 Vulkan 的 MPV GPU-NEXT 视频输出，着色器性能更好
@@ -430,16 +521,21 @@ abstract class _PlayerPlaybackController with Store {
           );
           if (actionableMessage != null) {
             KazumiDialog.showToast(
-                message: actionableMessage, showActionButton: true);
+              message: actionableMessage,
+              showActionButton: true,
+            );
           } else if (showPlayerError) {
             KazumiDialog.showToast(
-                message: '播放器内部错误 ${event.toString()} ${videoUrl()}',
-                duration: const Duration(seconds: 5),
-                showActionButton: true);
+              message: '播放器内部错误 ${event.toString()} ${videoUrl()}',
+              duration: const Duration(seconds: 5),
+              showActionButton: true,
+            );
           }
         }
-        KazumiLogger().e('PlayerController: Player intent error ${videoUrl()}',
-            error: event);
+        KazumiLogger().e(
+          'PlayerController: Player intent error ${videoUrl()}',
+          error: event,
+        );
       });
 
       if (superResolutionMode != SuperResolutionMode.off) {
@@ -457,14 +553,18 @@ abstract class _PlayerPlaybackController with Store {
       }
 
       await player.open(
-        Media(videoUrl(),
-            start: Duration(seconds: offset), httpHeaders: httpHeaders),
+        Media(
+          videoUrl(),
+          start: Duration(seconds: offset),
+          httpHeaders: httpHeaders,
+        ),
         play: autoPlay,
       );
       if (!isCurrentPlayer(player)) {
         return await _discardIfNotCurrent(candidate);
       }
 
+      await _startRenderWatchdog(player);
       if (cachePolicy.networkAutomatic) {
         KazumiDialog.showToast(message: '移动数据下已自动开启低内存模式，可在播放设置中改为始终关闭');
       }
@@ -472,6 +572,7 @@ abstract class _PlayerPlaybackController with Store {
       return player;
     } catch (error, stackTrace) {
       if (identical(_ownedPlayer, candidate)) {
+        _stopRenderWatchdog();
         cachePolicy.stopWatching();
         _ownedPlayer = null;
         videoController = null;
@@ -483,45 +584,52 @@ abstract class _PlayerPlaybackController with Store {
 
   Future<void> setShader(SuperResolutionMode mode, {Player? player}) async {
     final currentPlayer = player ?? mediaPlayer;
-    if (currentPlayer == null) return;
+    if (currentPlayer == null || !isCurrentPlayer(currentPlayer)) return;
+    // This observable always represents the user's choice, including during
+    // a temporary bypass. Recovery never writes persistent settings.
+    superResolutionMode = mode;
     try {
-      var pp = currentPlayer.platform as NativePlayer;
-      await pp.waitForPlayerInitialization;
-      await pp.waitForVideoControllerInitializationIfAttached;
-      if (!identical(mediaPlayer, currentPlayer)) {
-        return;
+      final recovery = _superResolutionRecovery;
+      if (recovery != null) {
+        await recovery.setMode(mode);
+      } else {
+        await _applyShader(mode, currentPlayer);
       }
-      switch (mode) {
-        case SuperResolutionMode.efficiency:
-          await pp.command([
-            'change-list',
-            'glsl-shaders',
-            'set',
-            buildShadersAbsolutePath(
-              shaderAssetService.shadersDirectory.path,
-              mpvAnime4KShadersLite,
-            ),
-          ]);
-          break;
-        case SuperResolutionMode.quality:
-          await pp.command([
-            'change-list',
-            'glsl-shaders',
-            'set',
-            buildShadersAbsolutePath(
-              shaderAssetService.shadersDirectory.path,
-              mpvAnime4KShaders,
-            ),
-          ]);
-          break;
-        case SuperResolutionMode.off:
-          await pp.command(['change-list', 'glsl-shaders', 'clr', '']);
-          break;
+      if (mode == SuperResolutionMode.off) {
+        _stopRenderWatchdog();
+      } else if (recovery == null && Platform.isWindows) {
+        await _startRenderWatchdog(currentPlayer);
       }
-      superResolutionMode = mode;
     } catch (e) {
       KazumiLogger().w('PlayerController: failed to set shader', error: e);
     }
+  }
+
+  Future<void> _applyShader(SuperResolutionMode mode, Player player) async {
+    final owner = _ownedPlayer;
+    if (owner == null || !identical(owner.player, player)) return;
+    await owner.shaderWrites.run(() async {
+      final pp = player.platform as NativePlayer;
+      await pp.waitForPlayerInitialization;
+      await pp.waitForVideoControllerInitializationIfAttached;
+      if (!identical(_ownedPlayer, owner)) return;
+      if (mode == SuperResolutionMode.off) {
+        await pp.command(['change-list', 'glsl-shaders', 'clr', '']);
+      } else {
+        await pp.command([
+          'change-list',
+          'glsl-shaders',
+          'set',
+          buildShadersAbsolutePath(
+            shaderAssetService.shadersDirectory.path,
+            mode == SuperResolutionMode.quality
+                ? mpvAnime4KShaders
+                : mpvAnime4KShadersLite,
+          ),
+        ]);
+      }
+      owner.appliedShaderMode = mode;
+    });
   }
 
   Future<void> setPlaybackSpeed(double playerSpeed) async {
@@ -529,8 +637,10 @@ abstract class _PlayerPlaybackController with Store {
     try {
       mediaPlayer!.setRate(playerSpeed);
     } catch (e) {
-      KazumiLogger()
-          .e('PlayerController: failed to set playback speed', error: e);
+      KazumiLogger().e(
+        'PlayerController: failed to set playback speed',
+        error: e,
+      );
     }
   }
 
@@ -615,6 +725,7 @@ abstract class _PlayerPlaybackController with Store {
   }
 
   Future<void> stop() async {
+    _stopRenderWatchdog();
     cachePolicy.stopWatching();
     final ownedPlayer = _ownedPlayer;
     _ownedPlayer = null;
